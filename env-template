@@ -1,0 +1,10 @@
+# Spotify app configuration
+#
+# Go to https://developer.spotify.com/dashboard and open the settings of your app to see the client ID, secret and
+# redirect URI.
+SPOTIFY_ID=
+SPOTIFY_SECRET=
+SPOTIFY_REDIRECT_URI=http://localhost:3000/callback
+
+SPOTIFY_DEVICE_ID=
+SPOTIFY_PLAYLIST_URI=spotify:playlist:<id>

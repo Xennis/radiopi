@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"io"
 	"log"
@@ -19,6 +20,10 @@ const (
 )
 
 var (
+	// staticContent holds the static web server content.
+	//go:embed index.html
+	staticContent embed.FS
+
 	auth = spotifyauth.New(
 		spotifyauth.WithRedirectURL(os.Getenv("SPOTIFY_REDIRECT_URI")),
 		spotifyauth.WithScopes(spotifyauth.ScopeUserModifyPlaybackState),
@@ -98,7 +103,7 @@ func main() {
 		}
 	}
 
-	http.Handle("/", http.FileServer(http.Dir("./static")))
+	http.Handle("/", http.FileServer(http.FS(staticContent)))
 	http.HandleFunc("/callback", handleLogin)
 	http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 		state = randomState()

@@ -4,11 +4,13 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"flag"
 	"io"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
@@ -16,7 +18,8 @@ import (
 )
 
 const (
-	tokenFile = "token.json"
+	redirectURI = "http://localhost:3000/callback"
+	tokenFile   = "token.json"
 )
 
 var (
@@ -24,10 +27,6 @@ var (
 	//go:embed index.html
 	staticContent embed.FS
 
-	auth = spotifyauth.New(
-		spotifyauth.WithRedirectURL(os.Getenv("SPOTIFY_REDIRECT_URI")),
-		spotifyauth.WithScopes(spotifyauth.ScopeUserModifyPlaybackState),
-	)
 	state = ""
 )
 
@@ -40,7 +39,7 @@ func randomState() string {
 	return string(b)
 }
 
-func handleLogin(w http.ResponseWriter, r *http.Request) {
+func handleLogin(auth *spotifyauth.Authenticator, w http.ResponseWriter, r *http.Request) {
 	tok, err := auth.Token(r.Context(), state, r)
 	if err != nil {
 		http.Error(w, "Couldn't get token", http.StatusForbidden)
@@ -66,14 +65,26 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 func main() {
 	ctx := context.Background()
 
-	deviceID := spotify.ID(os.Getenv("SPOTIFY_DEVICE_ID"))
+	clientIDPtr := flag.String("client-id", "", "Spotify client ID")
+	deviceSecretPtr := flag.String("client-secret", "", "Spotify client secret")
+	deviceIDPtr := flag.String("device-id", "", "Spotify device ID")
+	playlistURIPtr := flag.String("playlist-uri", "", "Spotify playlist URI in the form spotify:playlist:<id>")
+	flag.Parse()
+
+	deviceID := spotify.ID(*deviceIDPtr)
 	if deviceID == "" {
-		log.Fatal("SPOTIFY_DEVICE_ID not set")
+		log.Fatal("device-id not set")
 	}
-	playlistURI := spotify.URI(os.Getenv("SPOTIFY_PLAYLIST_URI"))
+	playlistURI := spotify.URI(*playlistURIPtr)
 	if playlistURI == "" {
-		log.Fatal("SPOTIFY_PLAYLIST_URI not set")
+		log.Fatal("playlist-uri not set")
 	}
+	auth := spotifyauth.New(
+		spotifyauth.WithClientID(*clientIDPtr),
+		spotifyauth.WithClientSecret(*deviceSecretPtr),
+		spotifyauth.WithRedirectURL(redirectURI),
+		spotifyauth.WithScopes(spotifyauth.ScopeUserModifyPlaybackState),
+	)
 
 	if _, err := os.Stat(tokenFile); err == nil {
 		tokenFile, err := os.Open(tokenFile)
@@ -94,17 +105,30 @@ func main() {
 
 		client := spotify.New(auth.Client(ctx, &tok))
 
-		err = client.PlayOpt(ctx, &spotify.PlayOptions{
-			DeviceID:        &deviceID,
-			PlaybackContext: &playlistURI,
-		})
-		if err != nil {
-			log.Fatal(err)
+		retries := 3
+		for {
+			err = client.PlayOpt(ctx, &spotify.PlayOptions{
+				DeviceID:        &deviceID,
+				PlaybackContext: &playlistURI,
+			})
+			if err == nil {
+				break
+			}
+			// Raspotify (Spotify Connect) takes a while to start up, so retry a few times.
+			if (retries > 0) && err.Error() == "Device not found" {
+				retries--
+				log.Printf("error playing %q, retrying in 10 seconds...", err)
+				time.Sleep(10 * time.Second)
+			} else {
+				log.Fatalf("error playing %q, giving up", err)
+			}
 		}
 	}
 
 	http.Handle("/", http.FileServer(http.FS(staticContent)))
-	http.HandleFunc("/callback", handleLogin)
+	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		handleLogin(auth, w, r)
+	})
 	http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 		state = randomState()
 		http.Redirect(w, r, auth.AuthURL(state), http.StatusTemporaryRedirect)

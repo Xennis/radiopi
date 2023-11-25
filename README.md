@@ -2,12 +2,11 @@
 
 ## Local development
 
-* Run `cp env.template .env` to create a `.env` file
-* Configure the newly created `.env` file. For this go to https://developer.spotify.com/dashboard and create a new app.
+* Go to https://developer.spotify.com/dashboard and create a new app.
 * Run the application:
 
 ```shell
-env $(cat .env | grep -v "#" | xargs) go run main.go
+go run main.go --client-id=<your-client-id> --client-secret=<your-client-secret> --device-id=<your-device-id> --playlist-run=<your-playlist-id>
 ```
 
 Go to http://localhost:3000 and login with your Spotify account.
@@ -30,4 +29,19 @@ Otherwise, please replace `radiopi.local` with the IP of your Pi in the followin
 Copy the binary to the Raspberry Pi
 ```shell
 scp build/radiopi-arm5 pi@radiopi.local:radiopi
+```
+
+### Autoplay on startup
+
+```shell
+# Copy the service and configure it:
+cp radiopi.service-template radiopi.service
+# Copy the service to the Pi:
+scp radiopi.service pi@radiopi.local:
+# On the Pi:
+sudo mv radiopi /usr/local/bin/
+sudo mv radiopi.service /etc/systemd/system/
+sudo chmod 644 /etc/systemd/system/radiopi.service
+sudo systemctl enable radiopi.service
+sudo reboot
 ```

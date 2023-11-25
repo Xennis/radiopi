@@ -1,0 +1,10 @@
+[Unit]
+Description=RadioPi
+After=network-online.target
+Wants=network-online.target systemd-networkd-wait-online.service
+
+[Service]
+ExecStart=/usr/local/bin/radiopi --client-id=<your-client-id> --client-secret=<your-client-secret> --device-id=<your-device-id> --playlist-run=<your-playlist-id>
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"math/rand"
@@ -27,6 +28,9 @@ var (
 	//go:embed index.html
 	staticContent embed.FS
 
+	clientID     string
+	clientSecret string
+
 	state = ""
 )
 
@@ -39,34 +43,74 @@ func randomState() string {
 	return string(b)
 }
 
+func saveToken(tok *oauth2.Token) error {
+	bytes, err := json.Marshal(*tok)
+	if err != nil {
+		return fmt.Errorf("marshaling token: %w", err)
+	}
+	err = os.WriteFile(tokenFile, bytes, 0644)
+	if err != nil {
+		return fmt.Errorf("writing token: %w", err)
+	}
+	return nil
+}
+
+func loadToken() (*oauth2.Token, error) {
+	file, err := os.Open(tokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("opening token file: %w", err)
+	}
+	defer file.Close()
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("reading token file: %w", err)
+	}
+
+	var tok oauth2.Token
+	if err = json.Unmarshal(content, &tok); err != nil {
+		return nil, fmt.Errorf("unmarshaling token: %w", err)
+	}
+	return &tok, nil
+}
+
 func handleLogin(auth *spotifyauth.Authenticator, w http.ResponseWriter, r *http.Request) {
 	tok, err := auth.Token(r.Context(), state, r)
 	if err != nil {
-		http.Error(w, "Couldn't get token", http.StatusForbidden)
+		http.Error(w, "couldn't get token", http.StatusForbidden)
 		log.Fatal(err)
 	}
 	if st := r.FormValue("state"); st != state {
 		http.NotFound(w, r)
-		log.Fatalf("State mismatch: %s != %s\n", st, state)
+		log.Fatalf("state mismatch: %s != %s\n", st, state)
 	}
-	tokByte, err := json.Marshal(tok)
-	if err != nil {
-		http.Error(w, "Couldn't marshal token", http.StatusInternalServerError)
-		log.Fatal(err)
-	}
-	err = os.WriteFile(tokenFile, tokByte, 0644)
-	if err != nil {
-		http.Error(w, "Couldn't write token", http.StatusInternalServerError)
+	if err := saveToken(tok); err != nil {
+		http.Error(w, "couldn't save token", http.StatusInternalServerError)
 		log.Fatal(err)
 	}
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
 
+// The Spotify API sometimes returns no error, but also does not start playing. To work around this, we
+// check the current the player state.
+func checkIsPlaying(ctx context.Context, client *spotify.Client, deviceID spotify.ID) error {
+	ps, err := client.PlayerState(ctx)
+	if err != nil {
+		return fmt.Errorf("getting player state: %w", err)
+	}
+	if ps == nil {
+		// It's possible that the API returns a '204 No Content' response, in which case the Go SDK returns
+		// no error and a nil player state.
+		return fmt.Errorf("nothing playing yet")
+	}
+	if ps.Device.ID != deviceID || !ps.Device.Active || !ps.Playing {
+		return fmt.Errorf("nothing playing on the device %q yet", deviceID)
+	}
+	return nil
+}
+
 func main() {
 	ctx := context.Background()
 
-	clientIDPtr := flag.String("client-id", "", "Spotify client ID")
-	deviceSecretPtr := flag.String("client-secret", "", "Spotify client secret")
 	deviceIDPtr := flag.String("device-id", "", "Spotify device ID")
 	playlistURIPtr := flag.String("playlist-uri", "", "Spotify playlist URI in the form spotify:playlist:<id>")
 	flag.Parse()
@@ -79,49 +123,58 @@ func main() {
 	if playlistURI == "" {
 		log.Fatal("playlist-uri not set")
 	}
+
 	auth := spotifyauth.New(
-		spotifyauth.WithClientID(*clientIDPtr),
-		spotifyauth.WithClientSecret(*deviceSecretPtr),
+		spotifyauth.WithClientID(clientID),
+		spotifyauth.WithClientSecret(clientSecret),
 		spotifyauth.WithRedirectURL(redirectURI),
-		spotifyauth.WithScopes(spotifyauth.ScopeUserModifyPlaybackState),
+		spotifyauth.WithScopes(
+			spotifyauth.ScopeUserReadPlaybackState,
+			spotifyauth.ScopeUserModifyPlaybackState,
+		),
 	)
 
 	if _, err := os.Stat(tokenFile); err == nil {
-		tokenFile, err := os.Open(tokenFile)
+		tok, err := loadToken()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("error loading token: %q", err)
 		}
-		defer tokenFile.Close()
-		fileContent, err := io.ReadAll(tokenFile)
+		client := spotify.New(auth.Client(ctx, tok))
+		newTok, err := client.Token()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("error getting token: %q", err)
 		}
-
-		var tok oauth2.Token
-		err = json.Unmarshal(fileContent, &tok)
-		if err != nil {
-			log.Fatal(err)
+		// store the refreshed token
+		if err := saveToken(newTok); err != nil {
+			log.Fatalf("error saving token: %q", err)
 		}
-
-		client := spotify.New(auth.Client(ctx, &tok))
 
 		retries := 3
 		for {
-			err = client.PlayOpt(ctx, &spotify.PlayOptions{
+			log.Println("playing...")
+			if err := client.PlayOpt(ctx, &spotify.PlayOptions{
 				DeviceID:        &deviceID,
 				PlaybackContext: &playlistURI,
-			})
-			if err == nil {
-				break
-			}
-			// Raspotify (Spotify Connect) takes a while to start up, so retry a few times.
-			if (retries > 0) && err.Error() == "Device not found" {
+			}); err != nil {
+				if retries == 0 {
+					log.Fatalf("error playing %q, giving up", err)
+				}
 				retries--
-				log.Printf("error playing %q, retrying in 10 seconds...", err)
+				log.Printf("error playing %q, retrying...", err)
 				time.Sleep(10 * time.Second)
-			} else {
-				log.Fatalf("error playing %q, giving up", err)
+				continue
 			}
+
+			if err := checkIsPlaying(ctx, client, deviceID); err != nil {
+				if retries == 0 {
+					log.Fatalf("error is playing %q, giving up", err)
+				}
+				retries--
+				log.Printf("error is playing %q, retrying...", err)
+				time.Sleep(10 * time.Second)
+				continue
+			}
+			break
 		}
 	}
 

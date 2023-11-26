@@ -6,7 +6,7 @@
 * Run the application:
 
 ```shell
-go run main.go --client-id=<your-client-id> --client-secret=<your-client-secret> --device-id=<your-device-id> --playlist-run=<your-playlist-id>
+go run main.go "-X main.clientID=${SPOTIFY_CLIENT_ID} -X main.clientSecret=${SPOTIFY_CLIENT_SECRET}" --device-id=<your-device-id> --playlist-run=<your-playlist-id>
 ```
 
 Go to http://localhost:3000 and login with your Spotify account.
@@ -16,7 +16,7 @@ Go to http://localhost:3000 and login with your Spotify account.
 Build for the Raspberry Pi:
 
 ```shell
-env GOOS=linux GOARCH=arm GOARM=5 go build -o build/radiopi-arm5
+env GOOS=linux GOARCH=arm GOARM=5 go build -o build/radiopi-arm5 -ldflags "-X main.clientID=${SPOTIFY_CLIENT_ID} -X main.clientSecret=${SPOTIFY_CLIENT_SECRET}"
 ```
 
 (Optional) If you want you can add a new line to your `/etc/hosts` file with the IP of your Pi. For example:
